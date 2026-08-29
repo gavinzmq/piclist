@@ -1,0 +1,148 @@
+# ============================================
+# Git 忽略配置 - PicList 部署项目
+# ============================================
+
+# ============================================
+# 1. 敏感信息与密钥（最重要，请勿提交）
+# ============================================
+# 环境变量文件（可能包含 PICLIST_KEY、WebDAV 密码、GitHub/Gitee Token 等）
+.env
+.env.*
+.env.*.local
+!.env.example
+!.env.development.example
+!.env.production.example
+
+Secrets.txt
+
+# 本地密钥 / 凭据文件
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials
+
+# Fly.io 本地部署相关（可能包含敏感配置）
+.fly/
+fly.toml.local
+.flyctl/
+
+# ============================================
+# 2. PicList / 图床运行数据（部署时生成，不应提交）
+# ============================================
+# 本地 PicList 配置与数据库
+.piclist/
+config.json
+piclist.db
+piclist.db-*
+
+# ============================================
+# 3. Node.js
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.lerna/
+.npm/
+.yarn/
+
+# ============================================
+# 4. 构建产物 / 临时文件
+# ============================================
+dist/
+build/
+out/
+*.tsbuildinfo
+*.tgz
+*.zip
+*.tar.gz
+.tmp/
+tmp/
+
+# ============================================
+# 5. 日志文件
+# ============================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ============================================
+# 6. 操作系统文件
+# ============================================
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+*.app
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================
+# 7. 编辑器 / IDE
+# ============================================
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# JetBrains (WebStorm / IntelliJ 等)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# ============================================
+# 8. 其他
+# ============================================
+# 覆盖本地配置文件（保留示例模板）
+*.local
+*.local.json
+*.local.yaml
+*.local.yml
+
+# Docker 环境
+.docker/
+Dockerfile.*.local
+
+# 数据库
+*.sqlite
+*.sqlite3
+*.db
+
+# 帮助 / 说明类
+*.md.tmp

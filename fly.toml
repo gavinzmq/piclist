@@ -52,26 +52,6 @@ primary_region = "nrt"
     timeout = "5s"
     grace_period = "30s"
 
-# ============================================
-# 服务 2：Web 管理界面（端口 37777）
-# 可选，通过浏览器管理图床配置
-# ============================================
-[[services]]
-  internal_port = 37777
-  protocol = "tcp"
-  
-  # 禁止自动停止，保持持续运行
-  auto_stop_machines = false
-
-  [services.concurrency]
-    hard_limit = 25
-    soft_limit = 20
-
-  [[services.ports]]
-    port = 37777
-    handlers = ["tls", "http"]
-
-  # 管理界面不需要健康检查（已省略）
 
 # ============================================
 # 持久化存储（必须）
@@ -92,8 +72,8 @@ primary_region = "nrt"
   LC_ALL = "zh_CN.UTF-8"
 
   # PicList 核心配置
-  PICBED_MODE = "single"
-  PICBED_TYPE = "s3"
+  #PICBED_MODE = "single"
+  #PICBED_TYPE = "s3"
   
   # buildin 功能配置（无水分）
   PICBED_COMPRESS = "true"
