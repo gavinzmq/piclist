@@ -1,0 +1,103 @@
+# ============================================
+# fly.toml - PicList-Core 完整部署配置
+# ============================================
+
+# 应用名称
+app = "plist"
+
+# 首选部署区域（东京，对四川地区访问较快）
+primary_region = "nrt"
+
+# ============================================
+# 构建配置
+# ============================================
+[build]
+  dockerfile = "Dockerfile"
+
+# ============================================
+# VM 虚拟机规格配置
+# ============================================
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# ============================================
+# 服务 1：API 服务（端口 36677）
+# Obsidian 等客户端调用的上传接口
+# ============================================
+[[services]]
+  internal_port = 36677
+  protocol = "tcp"
+  
+  # 禁止自动停止，保持持续运行（避免冷启动）
+  auto_stop_machines = false
+
+  [services.concurrency]
+    hard_limit = 50
+    soft_limit = 35
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  # HTTP 健康检查
+  [services.checks]
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+
+# ============================================
+# 服务 2：Web 管理界面（端口 37777）
+# 可选，通过浏览器管理图床配置
+# ============================================
+[[services]]
+  internal_port = 37777
+  protocol = "tcp"
+  
+  # 禁止自动停止，保持持续运行
+  auto_stop_machines = false
+
+  [services.concurrency]
+    hard_limit = 25
+    soft_limit = 20
+
+  [[services.ports]]
+    port = 37777
+    handlers = ["tls", "http"]
+
+  # 管理界面不需要健康检查（已省略）
+
+# ============================================
+# 持久化存储（必须）
+# 保存 config.json、piclist.db 等配置文件
+# ============================================
+[[mounts]]
+  source = "piclist_data"
+  destination = "/root/.piclist"
+
+# ============================================
+# 环境变量（非敏感信息）
+# 注意：密钥等敏感信息请使用 fly secrets set 设置
+# ============================================
+[env]
+  TZ = "Asia/Shanghai"
+  NODE_ENV = "production"
+  LANG = "zh_CN.UTF-8"
+  LC_ALL = "zh_CN.UTF-8"
+
+  # PicList 核心配置
+  PICBED_MODE = "single"
+  PICBED_TYPE = "s3"
+  
+  # buildin 功能配置（无水分）
+  PICBED_COMPRESS = "true"
+  PICBED_COMPRESS_QUALITY = "80"
+  PICBED_RENAME = "true"
+  PICBED_RENAME_RULE = "{md5}"
+  PICBED_EXIF_REMOVE = "true"
