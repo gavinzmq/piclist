@@ -7,630 +7,413 @@ set -e
 # 必需变量：
 #   PICLIST_KEY          : API 鉴权密钥（必需）
 #
-# 同步相关（可选）：
-#   SYNC_ENABLED         : 设为 true 时启用云端同步拉取
-#   SYNC_TYPE            : webdav / github / gitee
-#   SYNC_WEBDAV_ENDPOINT : WebDAV 服务器地址（如坚果云）
-#   SYNC_WEBDAV_USERNAME : WebDAV 用户名
-#   SYNC_WEBDAV_PASSWORD : WebDAV 密码（应用密码）
-#   SYNC_GITHUB_REPO     : GitHub 仓库（格式：用户名/仓库名）
-#   SYNC_GITHUB_TOKEN    : GitHub Personal Access Token
-#   SYNC_GITEE_REPO      : Gitee 仓库（格式：用户名/仓库名）
-#   SYNC_GITEE_TOKEN     : Gitee Personal Access Token
-#
-# 配置生成相关（如果同步未启用或失败）：
+# 配置生成相关：
 #   PICBED_MODE          : single（默认）或 multi
-#   PICBED_TYPE          : 单图床类型（tencent, aliyun, huawei, upyun, qiniu, webdav, s3, smms）
-#   PICBED_DEFAULT       : 多图床模式下的默认配置名
+#   PICBED_TYPE          : tencent/aliyun/huawei/upyun/qiniu/webdav/s3/smms
+#   PICBED_DEFAULT       : 多图床默认配置名
 #
-# buildin 功能（独立变量，无水分）：
-#   PICBED_COMPRESS         : 是否开启压缩（true/false），默认 true
-#   PICBED_COMPRESS_QUALITY : 压缩质量（0-100），默认 80
-#   PICBED_RENAME           : 是否开启重命名（true/false），默认 true
-#   PICBED_RENAME_RULE      : 重命名规则，默认 {md5}
-#   PICBED_EXIF_REMOVE      : 是否移除 EXIF 信息（true/false），默认 false
+# buildin 功能：
+#   PICBED_COMPRESS         : true/false，默认 true
+#   PICBED_COMPRESS_QUALITY : 0-100，默认 80
+#   PICBED_RENAME           : true/false，默认 true
+#   PICBED_RENAME_RULE      : 默认 {md5}
+#   PICBED_EXIF_REMOVE      : true/false，默认 false
 #
-# 多图床模式（前缀环境变量方式，推荐）：
-#   PICBED_0_NAME        : 图床配置名称（必需）
-#   PICBED_0_TYPE        : 图床类型（tencent, aliyun, s3, webdav 等）
-#   PICBED_0_*           : 对应平台参数（见下方映射表）
-#   PICBED_0_BACKUP_OF   : 可选，指定该图床是哪个图床的备份（只取第一个）
-#   支持多个图床，索引从 0 开始递增
+# 腾讯云 COS 专用：
+#   TC_SECRET_ID    : 腾讯云 SecretId
+#   TC_SECRET_KEY   : 腾讯云 SecretKey
+#   TC_BUCKET       : 存储桶名称（必须含 APPID，如 my-images-1234567890）
+#   TC_REGION       : 地域（如 ap-guangzhou）
+#   TC_PATH         : 存储路径前缀（可选）
+#   TC_CUSTOM_URL   : 自定义域名（可选）
 #
-# 类型与 PicList uploader 映射表：
-#   tencent  -> tcyun
-#   aliyun   -> aliyun
-#   huawei   -> huawei
-#   upyun    -> upyun
-#   qiniu    -> qiniu
-#   s3       -> s3
-#   webdav   -> webdavplist
+# 多图床模式：
+#   PICBED_0_NAME, PICBED_0_TYPE, PICBED_0_* (参数), PICBED_0_BACKUP_OF
 # ============================================
 
 # ============================================
-# 1. 初始化与基础检查
+# 1. 日志函数
 # ============================================
-
-# 检查必需变量
-if [ -z "$PICLIST_KEY" ]; then
-    echo "ERROR: PICLIST_KEY is not set" >&2
-    exit 1
-fi
-
-# 设置只读常量
-readonly PICLIST_KEY="${PICLIST_KEY}"
-readonly PICBED_MODE=${PICBED_MODE:-single}
-readonly PICBED_DEFAULT=${PICBED_DEFAULT:-}
-readonly SYNC_ENABLED=${SYNC_ENABLED:-false}
-
-# buildin 独立变量（无水分）
-readonly PICBED_COMPRESS=${PICBED_COMPRESS:-true}
-readonly PICBED_COMPRESS_QUALITY=${PICBED_COMPRESS_QUALITY:-80}
-readonly PICBED_RENAME=${PICBED_RENAME:-true}
-readonly PICBED_RENAME_RULE=${PICBED_RENAME_RULE:-"{md5}"}
-readonly PICBED_EXIF_REMOVE=${PICBED_EXIF_REMOVE:-false}
-
-# 创建配置目录
-mkdir -p /root/.piclist
-
-# 部署去重脚本（如果存在）
-mkdir -p /root/.piclist/scripts/beforeUpload
-if [ -f "/deduplicate.js" ]; then
-    cp /deduplicate.js /root/.piclist/scripts/beforeUpload/deduplicate.js
-    echo "✅ 去重脚本部署成功"
-else
-    echo "⚠️ 警告：未找到去重脚本，去重功能不可用"
-fi
-
-# ============================================
-# 2. 工具函数
-# ============================================
-
-log_info() {
-    echo "[INFO] $1"
-}
-
-log_warn() {
-    echo "[WARN] $1" >&2
+log() {
+    echo "[$1] $2"
 }
 
 log_error() {
     echo "[ERROR] $1" >&2
 }
 
-validate_json() {
-    local file="$1"
-    if command -v jq >/dev/null 2>&1; then
-        if ! jq empty "$file" 2>/dev/null; then
-            log_error "生成的 config.json 格式无效"
-            cat "$file" >&2
-            return 1
-        fi
-        log_info "✅ config.json 格式验证通过"
-        return 0
+# ============================================
+# 2. 初始化与基础检查
+# ============================================
+
+# 检查必需变量
+if [ -z "$PICLIST_KEY" ]; then
+    log_error "PICLIST_KEY 未设置"
+    exit 1
+fi
+
+# 检查 jq 是否安装
+if ! command -v jq >/dev/null 2>&1; then
+    log_error "jq 未安装，请在 Dockerfile 中添加: RUN apk add --no-cache jq"
+    exit 1
+fi
+
+# 打印调试信息
+log INFO "=== 环境变量调试 ==="
+log INFO "PICLIST_KEY: ${PICLIST_KEY:0:10}..."
+log INFO "PICBED_MODE: ${PICBED_MODE:-single}"
+log INFO "PICBED_TYPE: ${PICBED_TYPE:-未设置}"
+log INFO "TC_SECRET_ID: ${TC_SECRET_ID:0:10}..."
+log INFO "TC_SECRET_KEY: ${TC_SECRET_KEY:0:10}..."
+log INFO "TC_BUCKET: ${TC_BUCKET:-未设置}"
+log INFO "TC_REGION: ${TC_REGION:-未设置}"
+log INFO "jq 版本: $(jq --version 2>/dev/null || echo '未知')"
+log INFO "======================"
+
+# 检查 TC_BUCKET 格式（必须包含 APPID）
+if [ -n "$TC_BUCKET" ]; then
+    if ! echo "$TC_BUCKET" | grep -q -- '-[0-9][0-9]*$'; then
+        log_error "TC_BUCKET 格式错误，必须包含 APPID，如 my-images-1234567890"
+        exit 1
     fi
-    return 0
-}
+    log INFO "TC_BUCKET 格式检查通过"
+fi
 
-get_env_value() {
-    local var_name="$1"
-    eval echo "\$$var_name"
-}
 
 # ============================================
-# 3. 配置生成函数
+# 3. 默认值
+# ============================================
+PICBED_MODE="${PICBED_MODE:-single}"
+PICBED_COMPRESS="${PICBED_COMPRESS:-true}"
+PICBED_COMPRESS_QUALITY="${PICBED_COMPRESS_QUALITY:-80}"
+PICBED_RENAME="${PICBED_RENAME:-true}"
+PICBED_RENAME_RULE="${PICBED_RENAME_RULE:-"{md5}"}"
+PICBED_EXIF_REMOVE="${PICBED_EXIF_REMOVE:-false}"
+
+# ============================================
+# 4. 公共函数
 # ============================================
 
-# --------------------------------------------
-# 3.1 生成默认配置（SM.MS 图床）
-# --------------------------------------------
-generate_default_config() {
-    cat <<EOF
-{
-  "picBed": {
-    "current": "smms"
-  },
-  "uploader": {
-    "smms": {}
-  }
-}
-EOF
+# 构建 buildin JSON
+buildin() {
+    jq -n \
+        --argjson compress "$PICBED_COMPRESS" \
+        --argjson quality "$PICBED_COMPRESS_QUALITY" \
+        --argjson rename "$PICBED_RENAME" \
+        --arg rule "$PICBED_RENAME_RULE" \
+        --argjson exif "$PICBED_EXIF_REMOVE" \
+        '{compress:$compress,compressQuality:$quality,rename:$rename,renameRule:$rule,exifRemove:$exif}' \
+        2>/dev/null || {
+        log_error "buildin 生成失败，请检查环境变量"
+        exit 1
+    }
 }
 
-# --------------------------------------------
-# 3.2 根据类型获取 PicList uploader 名称
-# --------------------------------------------
-get_uploader_type() {
-    local type="$1"
-    case "$type" in
-        tencent) echo "tcyun" ;;
-        webdav)  echo "webdavplist" ;;
-        *)       echo "$type" ;;
+# 图床类型配置模板
+# 格式: uploader_name|字段映射|必需变量
+get_template() {
+    case "$1" in
+        tencent)
+            # 修改 region 为 area，以符合 PicList 配置规范
+            echo "tcyun|secretId:TC_SECRET_ID,secretKey:TC_SECRET_KEY,bucket:TC_BUCKET,area:TC_REGION,path:TC_PATH,customUrl:TC_CUSTOM_URL|TC_SECRET_ID TC_SECRET_KEY TC_BUCKET TC_REGION"
+            ;;
+        aliyun)
+            echo "aliyun|accessKeyId:ALI_ACCESS_KEY_ID,accessKeySecret:ALI_ACCESS_KEY_SECRET,bucket:ALI_BUCKET,region:ALI_REGION,path:ALI_PATH|ALI_ACCESS_KEY_ID ALI_ACCESS_KEY_SECRET ALI_BUCKET ALI_REGION"
+            ;;
+        s3)
+            echo "s3|accessKeyId:S3_ACCESS_KEY_ID,secretAccessKey:S3_SECRET_ACCESS_KEY,bucket:S3_BUCKET,region:S3_REGION,endpoint:S3_ENDPOINT,path:S3_PATH|S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_BUCKET S3_ENDPOINT"
+            ;;
+        webdav)
+            echo "webdavplist|endpoint:WEBDAV_ENDPOINT,username:WEBDAV_USERNAME,password:WEBDAV_PASSWORD,path:WEBDAV_PATH|WEBDAV_ENDPOINT WEBDAV_USERNAME WEBDAV_PASSWORD"
+            ;;
+        smms)
+            echo "smms||"
+            ;;
+        *)
+            return 1
+            ;;
     esac
 }
 
-# --------------------------------------------
-# 3.3 根据类型构建参数对象
-# --------------------------------------------
-build_params_for_type() {
-    local type="$1"
+# 从环境变量构建参数对象
+build_params() {
+    local fields="$1"
     local prefix="$2"
     local params="{}"
     
-    case "$type" in
-        tencent)
-            for key in SECRET_ID SECRET_KEY BUCKET REGION PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        s3)
-            for key in ACCESS_KEY_ID SECRET_ACCESS_KEY BUCKET REGION ENDPOINT PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        aliyun)
-            for key in ACCESS_KEY_ID ACCESS_KEY_SECRET BUCKET REGION PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        huawei)
-            for key in ACCESS_KEY SECRET_KEY BUCKET ENDPOINT PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        upyun)
-            for key in USERNAME PASSWORD BUCKET CUSTOM_URL PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        qiniu)
-            for key in ACCESS_KEY SECRET_KEY BUCKET CUSTOM_URL PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        webdav)
-            for key in ENDPOINT USERNAME PASSWORD PATH; do
-                val=$(get_env_value "${prefix}_$key")
-                [ -n "$val" ] && params=$(echo "$params" | jq --arg key "$(echo "$key" | tr '[:upper:]' '[:lower:]')" --arg val "$val" '. + {($key): $val}')
-            done
-            ;;
-        *)
-            log_error "不支持的图床类型: $type"
-            return 1
-            ;;
-    esac
+    IFS=,
+    for item in $fields; do
+        [ -z "$item" ] && continue
+        key="${item%%:*}"
+        env_name="${item#*:}"
+        val=$(eval echo "\${${prefix}${env_name}:-}")
+        if [ -n "$val" ]; then
+            params=$(echo "$params" | jq --arg key "$key" --arg val "$val" '. + {($key): $val}') 2>/dev/null || {
+                log_error "build_params 失败: key=$key, val=$val"
+                exit 1
+            }
+        fi
+    done
     
     echo "$params"
 }
 
-# --------------------------------------------
-# 3.4 生成单图床配置
-# --------------------------------------------
-generate_single_config() {
-    local type="$1"
-    local config_json=""
-
-    case "$type" in
-        tencent)
-            : "${TC_SECRET_ID:?需设置 TC_SECRET_ID}"
-            : "${TC_SECRET_KEY:?需设置 TC_SECRET_KEY}"
-            : "${TC_BUCKET:?需设置 TC_BUCKET}"
-            : "${TC_REGION:?需设置 TC_REGION}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "tcyun" },
-  "uploader": {
-    "tcyun": {
-      "secretId": "${TC_SECRET_ID}",
-      "secretKey": "${TC_SECRET_KEY}",
-      "bucket": "${TC_BUCKET}",
-      "region": "${TC_REGION}",
-      "path": "${TC_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        aliyun)
-            : "${ALI_ACCESS_KEY_ID:?需设置 ALI_ACCESS_KEY_ID}"
-            : "${ALI_ACCESS_KEY_SECRET:?需设置 ALI_ACCESS_KEY_SECRET}"
-            : "${ALI_BUCKET:?需设置 ALI_BUCKET}"
-            : "${ALI_REGION:?需设置 ALI_REGION}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "aliyun" },
-  "uploader": {
-    "aliyun": {
-      "accessKeyId": "${ALI_ACCESS_KEY_ID}",
-      "accessKeySecret": "${ALI_ACCESS_KEY_SECRET}",
-      "bucket": "${ALI_BUCKET}",
-      "region": "${ALI_REGION}",
-      "path": "${ALI_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        huawei)
-            : "${HW_ACCESS_KEY:?需设置 HW_ACCESS_KEY}"
-            : "${HW_SECRET_KEY:?需设置 HW_SECRET_KEY}"
-            : "${HW_BUCKET:?需设置 HW_BUCKET}"
-            : "${HW_ENDPOINT:?需设置 HW_ENDPOINT}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "huawei" },
-  "uploader": {
-    "huawei": {
-      "accessKey": "${HW_ACCESS_KEY}",
-      "secretKey": "${HW_SECRET_KEY}",
-      "bucket": "${HW_BUCKET}",
-      "endpoint": "${HW_ENDPOINT}",
-      "path": "${HW_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        upyun)
-            : "${UP_USERNAME:?需设置 UP_USERNAME}"
-            : "${UP_PASSWORD:?需设置 UP_PASSWORD}"
-            : "${UP_BUCKET:?需设置 UP_BUCKET}"
-            : "${UP_CUSTOM_URL:?需设置 UP_CUSTOM_URL}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "upyun" },
-  "uploader": {
-    "upyun": {
-      "username": "${UP_USERNAME}",
-      "password": "${UP_PASSWORD}",
-      "bucket": "${UP_BUCKET}",
-      "customUrl": "${UP_CUSTOM_URL}",
-      "path": "${UP_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        qiniu)
-            : "${QN_ACCESS_KEY:?需设置 QN_ACCESS_KEY}"
-            : "${QN_SECRET_KEY:?需设置 QN_SECRET_KEY}"
-            : "${QN_BUCKET:?需设置 QN_BUCKET}"
-            : "${QN_CUSTOM_URL:?需设置 QN_CUSTOM_URL}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "qiniu" },
-  "uploader": {
-    "qiniu": {
-      "accessKey": "${QN_ACCESS_KEY}",
-      "secretKey": "${QN_SECRET_KEY}",
-      "bucket": "${QN_BUCKET}",
-      "customUrl": "${QN_CUSTOM_URL}",
-      "path": "${QN_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        webdav)
-            : "${WEBDAV_ENDPOINT:?需设置 WEBDAV_ENDPOINT}"
-            : "${WEBDAV_USERNAME:?需设置 WEBDAV_USERNAME}"
-            : "${WEBDAV_PASSWORD:?需设置 WEBDAV_PASSWORD}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "webdavplist" },
-  "uploader": {
-    "webdavplist": {
-      "endpoint": "${WEBDAV_ENDPOINT}",
-      "username": "${WEBDAV_USERNAME}",
-      "password": "${WEBDAV_PASSWORD}",
-      "path": "${WEBDAV_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        s3)
-            : "${S3_ACCESS_KEY_ID:?需设置 S3_ACCESS_KEY_ID}"
-            : "${S3_SECRET_ACCESS_KEY:?需设置 S3_SECRET_ACCESS_KEY}"
-            : "${S3_BUCKET:?需设置 S3_BUCKET}"
-            : "${S3_ENDPOINT:?需设置 S3_ENDPOINT}"
-            config_json=$(cat <<EOF
-{
-  "picBed": { "current": "s3" },
-  "uploader": {
-    "s3": {
-      "accessKeyId": "${S3_ACCESS_KEY_ID}",
-      "secretAccessKey": "${S3_SECRET_ACCESS_KEY}",
-      "bucket": "${S3_BUCKET}",
-      "region": "${S3_REGION:-auto}",
-      "endpoint": "${S3_ENDPOINT}",
-      "path": "${S3_PATH:-}"
-    }
-  }
-}
-EOF
-            )
-            ;;
-        smms)
-            config_json=$(generate_default_config)
-            ;;
-        *)
-            log_error "不支持的图床类型: $type"
-            exit 1
-            ;;
-    esac
-
-    echo "$config_json"
-}
-
-# --------------------------------------------
-# 3.5 生成多图床配置（支持混合类型）
-# --------------------------------------------
-generate_multi_config_from_env() {
-    indexes=$(env | grep '^PICBED_[0-9]\+_NAME=' | sed 's/^PICBED_\([0-9]\+\)_NAME=.*$/\1/' | sort -n)
+# 腾讯云特殊处理：appId 和 version
+apply_tencent_special() {
+    local params="$1"
+    local prefix="$2"
     
-    if [ -z "$indexes" ]; then
-        log_error "多图床模式下未找到 PICBED_*_NAME 环境变量"
+    bucket_val=$(eval echo "\${${prefix}BUCKET:-}")
+    if [ -n "$bucket_val" ]; then
+        appid="${bucket_val##*-}"
+        params=$(echo "$params" | jq --arg val "$appid" '. + {appId: $val}') 2>/dev/null || {
+            log_error "apply_tencent_special 失败: appId 添加失败"
+            exit 1
+        }
+    fi
+    params=$(echo "$params" | jq --arg val "v5" '. + {version: $val}') 2>/dev/null || {
+        log_error "apply_tencent_special 失败: version 添加失败"
+        exit 1
+    }
+    
+    echo "$params"
+}
+
+# ============================================
+# 5. 单图床配置
+# ============================================
+single_config() {
+    local type="$1"
+    local template=$(get_template "$type")
+    if [ -z "$template" ]; then
+        log_error "不支持的图床类型: $type"
         exit 1
     fi
     
-    TEMP_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_DIR" EXIT INT TERM
+    local uploader="${template%%|*}"
+    local rest="${template#*|}"
+    local fields="${rest%%|*}"
+    local required="${rest#*|}"
     
-    type_list=""
-    first_config_name=""
-    first_config_type=""
+    # 检查必需变量
+    for var in $required; do
+        eval "value=\$$var"
+        if [ -z "$value" ]; then
+            log_error "缺少必需变量: $var"
+            exit 1
+        fi
+    done
     
-    second_config_enable="false"
-    second_config_uploader=""
-    second_config_name=""
-    second_config_target=""
+    # SM.MS 空配置
+    if [ -z "$fields" ]; then
+        echo "{\"picBed\":{\"current\":\"${uploader}\",\"uploader\":\"${uploader}\",\"${uploader}\":{}}}"
+        return
+    fi
+    
+    # 构建参数
+    local params=$(build_params "$fields" "")
+    
+    # 腾讯云特殊处理
+    if [ "$type" = "tencent" ]; then
+        params=$(apply_tencent_special "$params" "")
+    fi
+    
+    echo "{\"picBed\":{\"current\":\"${uploader}\",\"uploader\":\"${uploader}\",\"${uploader}\":${params}}}"
+}
+# ============================================
+# 6. 多图床配置
+# ============================================
+multi_config() {
+    log INFO "生成多图床配置"
+    
+    local indexes=$(env | grep '^PICBED_[0-9]\+_NAME=' | sed 's/^PICBED_\([0-9]\+\)_NAME=.*$/\1/' | sort -n)
+    if [ -z "$indexes" ]; then
+        log_error "未找到 PICBED_*_NAME 环境变量"
+        exit 1
+    fi
+    
+    local tmp=$(mktemp -d)
+    trap "rm -rf $tmp" EXIT INT TERM
+    
+    local types=""
+    local first=""
+    local backup_enable=false
+    local backup_type=""
+    local backup_name=""
+    local backup_target=""
     
     for idx in $indexes; do
-        prefix="PICBED_${idx}"
-        
-        name=$(get_env_value "${prefix}_NAME")
-        type=$(get_env_value "${prefix}_TYPE")
+        local prefix="PICBED_${idx}_"
+        local name=$(eval echo "\${${prefix}NAME}")
+        local type=$(eval echo "\${${prefix}TYPE}")
         
         if [ -z "$name" ] || [ -z "$type" ]; then
-            log_warn "跳过索引 $idx: NAME 或 TYPE 缺失"
+            log WARN "跳过索引 $idx: NAME 或 TYPE 缺失"
             continue
         fi
         
-        log_info "发现图床配置: $name (类型: $type)"
+        log INFO "发现图床配置: $name (类型: $type)"
         
-        params=$(build_params_for_type "$type" "$prefix")
-        if [ $? -ne 0 ]; then
-            log_warn "跳过索引 $idx: 参数构建失败"
+        local template=$(get_template "$type")
+        if [ -z "$template" ]; then
+            log WARN "跳过 $name: 不支持的类型 $type"
             continue
         fi
         
-        uploader_type=$(get_uploader_type "$type")
-        config_obj=$(echo "$params" | jq --arg name "$name" '. + {_configName: $name}')
+        local uploader="${template%%|*}"
+        local rest="${template#*|}"
+        local fields="${rest%%|*}"
+        local required="${rest#*|}"
         
-        config_file="${TEMP_DIR}/${uploader_type}.list"
-        if [ -f "$config_file" ]; then
-            echo ", $config_obj" >> "$config_file"
+        # 检查必需变量
+        local missing=false
+        for var in $required; do
+            eval "value=\${${prefix}${var}}"
+            if [ -z "$value" ]; then
+                log WARN "跳过 $name: 缺少 ${prefix}${var}"
+                missing=true
+                break
+            fi
+        done
+        if [ "$missing" = "true" ]; then
+            continue
+        fi
+        
+        # 构建参数
+        local params=$(build_params "$fields" "$prefix")
+        
+        # 腾讯云特殊处理
+        if [ "$type" = "tencent" ]; then
+            params=$(apply_tencent_special "$params" "$prefix")
+        fi
+        
+        # 添加配置名
+        params=$(echo "$params" | jq --arg name "$name" '. + {_configName: $name}') 2>/dev/null || {
+            log_error "添加 _configName 失败: $name"
+            exit 1
+        }
+        
+        # 添加到列表
+        local f="${tmp}/${uploader}.list"
+        if [ -f "$f" ]; then
+            echo ", $params" >> "$f"
         else
-            echo "$config_obj" > "$config_file"
-            type_list="${type_list}${uploader_type} "
+            echo "$params" > "$f"
+            types="${types}${uploader} "
         fi
         
-        if [ -z "$first_config_name" ]; then
-            first_config_name="$name"
-            first_config_type="$uploader_type"
+        # 记录第一个配置
+        if [ -z "$first" ]; then
+            first="$name"
         fi
         
-        backup_of=$(get_env_value "${prefix}_BACKUP_OF")
-        if [ -n "$backup_of" ] && [ "$second_config_enable" = "false" ]; then
-            second_config_enable="true"
-            second_config_uploader="$uploader_type"
-            second_config_name="$name"
-            second_config_target="$backup_of"
-            log_info "备份配置: $name -> $backup_of"
+        # 备份配置（只取第一个）
+        local backup_of=$(eval echo "\${${prefix}BACKUP_OF}")
+        if [ -n "$backup_of" ] && [ "$backup_enable" = "false" ]; then
+            backup_enable=true
+            backup_type="$uploader"
+            backup_name="$name"
+            backup_target="$backup_of"
+            log INFO "备份配置: $name -> $backup_of"
         fi
     done
     
-    if [ -z "$type_list" ]; then
-        log_error "未找到任何有效的图床配置"
+    if [ -z "$types" ]; then
+        log_error "无有效图床配置"
         exit 1
     fi
     
-    cat <<EOF
-{
-  "picBed": {
-    "current": "${PICBED_DEFAULT:-$first_config_name}"
-  },
-  "uploader": {
-EOF
-    
-    first_type=true
-    for uploader_type in $type_list; do
-        config_file="${TEMP_DIR}/${uploader_type}.list"
-        if [ ! -f "$config_file" ]; then
+    # 生成 uploader 部分
+    local uploader_json=""
+    local first_type=true
+    for ut in $types; do
+        local f="${tmp}/${ut}.list"
+        if [ ! -f "$f" ]; then
             continue
         fi
-        
-        config_content=$(cat "$config_file")
-        
+        local content=$(cat "$f" | tr -d '\n')
         if [ "$first_type" = "true" ]; then
             first_type=false
+            uploader_json="\"${ut}\": {\"configList\": [${content}]}"
         else
-            echo ","
+            uploader_json="${uploader_json}, \"${ut}\": {\"configList\": [${content}]}"
         fi
-        
-        cat <<EOF
-    "${uploader_type}": {
-      "configList": [${config_content}]
-    }
-EOF
     done
     
-    cat <<EOF
-  }
-EOF
+    echo "{\"picBed\":{\"current\":\"${PICBED_DEFAULT:-$first}\"},\"uploader\":{${uploader_json}}}"
     
-    if [ "$second_config_enable" = "true" ]; then
-        cat <<EOF
-  "secondConfig": {
-    "enable": true,
-    "mode": "backup",
-    "uploader": "${second_config_uploader}",
-    "configName": "${second_config_name}",
-    "target": "${second_config_target}"
-  }
-EOF
+    if [ "$backup_enable" = "true" ]; then
+        echo ",\"secondConfig\":{\"enable\":true,\"mode\":\"backup\",\"uploader\":\"${backup_type}\",\"configName\":\"${backup_name}\",\"target\":\"${backup_target}\"}"
     fi
-    
-    echo "}"
-}
-
-# --------------------------------------------
-# 3.6 兼容旧版 JSON 方式的多图床配置
-# --------------------------------------------
-generate_multi_config_from_json() {
-    local config_list="$1"
-    if [ -z "$config_list" ]; then
-        log_error "PICBED_CONFIG_LIST 未设置"
-        exit 1
-    fi
-
-    cat <<EOF
-{
-  "picBed": {
-    "current": "${PICBED_DEFAULT:-s3}"
-  },
-  "uploader": {
-    "s3": {
-      "configList": ${config_list},
-      "defaultId": "${PICBED_DEFAULT}"
-    }
-  }
-}
-EOF
-}
-
-# --------------------------------------------
-# 3.7 生成 buildin 对象（从独立变量构建）
-# --------------------------------------------
-generate_buildin_json() {
-    if [ -n "$PICBED_BUILDIN" ]; then
-        log_warn "检测到旧版 PICBED_BUILDIN，将使用其值（建议迁移到独立变量）"
-        if echo "$PICBED_BUILDIN" | jq -e . >/dev/null 2>&1; then
-            echo "$PICBED_BUILDIN"
-            return
-        else
-            log_error "PICBED_BUILDIN 格式无效，将使用独立变量构建"
-        fi
-    fi
-    
-    local buildin_json="{}"
-    
-    buildin_json=$(echo "$buildin_json" | jq --argjson val "$PICBED_COMPRESS" '. + {compress: $val}')
-    buildin_json=$(echo "$buildin_json" | jq --argjson val "$PICBED_COMPRESS_QUALITY" '. + {compressQuality: $val}')
-    buildin_json=$(echo "$buildin_json" | jq --argjson val "$PICBED_RENAME" '. + {rename: $val}')
-    buildin_json=$(echo "$buildin_json" | jq --arg val "$PICBED_RENAME_RULE" '. + {renameRule: $val}')
-    buildin_json=$(echo "$buildin_json" | jq --argjson val "$PICBED_EXIF_REMOVE" '. + {exifRemove: $val}')
-    
-    echo "$buildin_json"
-}
-
-# --------------------------------------------
-# 3.8 合并 buildin 功能
-# --------------------------------------------
-merge_buildin() {
-    local config_json="$1"
-    local buildin_json=$(generate_buildin_json)
-    
-    if command -v jq >/dev/null 2>&1; then
-        echo "$config_json" | jq --argjson buildin "$buildin_json" '. + {buildin: $buildin}'
-    else
-        log_warn "jq 未安装，使用 sed 拼接 buildin（可能不完整）"
-        buildin_part=$(echo "$buildin_json" | sed 's/^{//;s/}$//')
-        final_config=$(echo "$config_json" | sed 's/}$//')
-        echo "${final_config}, \"buildin\": {${buildin_part}} }"
-    fi
+    echo ""
 }
 
 # ============================================
-# 4. 主逻辑
+# 7. 主流程
 # ============================================
 
-# 第一步：尝试从云端同步配置
-if [ "$SYNC_ENABLED" = "true" ]; then
-    log_info "尝试从云端拉取配置..."
-    
-    cat > /root/.piclist/config.json << EOF
-{
-  "sync": {
-    "type": "${SYNC_TYPE:-webdav}",
-    "webdavEndpoint": "${SYNC_WEBDAV_ENDPOINT}",
-    "username": "${SYNC_WEBDAV_USERNAME}",
-    "password": "${SYNC_WEBDAV_PASSWORD}",
-    "githubRepo": "${SYNC_GITHUB_REPO}",
-    "githubToken": "${SYNC_GITHUB_TOKEN}",
-    "giteeRepo": "${SYNC_GITEE_REPO}",
-    "giteeToken": "${SYNC_GITEE_TOKEN}"
-  }
-}
-EOF
+log INFO "开始生成配置..."
 
-    if picgo sync pull --config /root/.piclist/config.json 2>/dev/null; then
-        log_info "✅ 云端配置拉取成功，将使用云端配置启动。"
-        exec node /usr/local/bin/picgo-server -k "${PICLIST_KEY}"
-        exit 0
-    else
-        log_warn "云端配置拉取失败，将尝试通过环境变量生成配置。"
-        rm -f /root/.piclist/config.json
-    fi
-fi
-
-# 第二步：通过环境变量生成配置
-log_info "通过环境变量生成配置..."
-
+# 生成配置 JSON
 if [ "$PICBED_MODE" = "multi" ]; then
-    if [ -n "$PICBED_CONFIG_LIST" ]; then
-        log_info "检测到 PICBED_CONFIG_LIST，使用 JSON 方式生成多图床配置..."
-        config_json=$(generate_multi_config_from_json "$PICBED_CONFIG_LIST")
-    else
-        log_info "使用前缀环境变量方式生成多图床配置（支持混合类型）..."
-        config_json=$(generate_multi_config_from_env)
-    fi
+    config=$(multi_config)
 elif [ -n "$PICBED_TYPE" ]; then
-    log_info "使用单图床模式生成配置（类型: $PICBED_TYPE）..."
-    config_json=$(generate_single_config "$PICBED_TYPE")
+    config=$(single_config "$PICBED_TYPE")
 else
-    log_info "未指定 PICBED_TYPE，生成默认配置（SM.MS 图床）"
-    config_json=$(generate_default_config)
+    log INFO "未指定 PICBED_TYPE，使用默认配置 (SM.MS)"
+    config='{"picBed":{"current":"smms","uploader":"smms","smms":{}}}'
 fi
 
-log_info "合并内置功能 (buildin)..."
-final_config=$(merge_buildin "$config_json")
-
-echo "$final_config" > /root/.piclist/config.json
-log_info "配置文件已写入: /root/.piclist/config.json"
-
-if ! validate_json /root/.piclist/config.json; then
-    log_error "配置文件验证失败，请检查环境变量配置"
+# 验证配置是否为空
+if [ -z "$config" ]; then
+    log_error "配置生成失败，config 为空"
     exit 1
 fi
 
-if [ "${DEBUG:-false}" = "true" ]; then
-    log_info "配置文件内容:"
-    cat /root/.piclist/config.json
+# 验证 config 是否为有效 JSON
+if ! echo "$config" | jq empty 2>/dev/null; then
+    log_error "config 格式无效: $config"
+    exit 1
 fi
 
-log_info "启动 PicList-Core 服务..."
-exec node /usr/local/bin/picgo-server -k "${PICLIST_KEY}"
+log INFO "配置生成完成，合并 buildin..."
+
+# 合并 buildin
+final=$(echo "$config" | jq --argjson b "$(buildin)" '. + {buildin: $b}') 2>/dev/null || {
+    log_error "jq 合并失败，请检查 config 和 buildin 格式"
+    exit 1
+}
+
+# 验证 final 是否为有效 JSON
+if ! echo "$final" | jq empty 2>/dev/null; then
+    log_error "最终 config.json 格式无效"
+    exit 1
+fi
+
+# 写入配置文件
+echo "$final" > /root/.piclist/config.json
+log INFO "config.json 已写入"
+
+# 验证文件是否成功写入
+if [ ! -s /root/.piclist/config.json ]; then
+    log_error "config.json 写入失败或为空"
+    exit 1
+fi
+
+# 再次验证文件内容
+if ! jq empty /root/.piclist/config.json 2>/dev/null; then
+    log_error "config.json 文件格式无效"
+    cat /root/.piclist/config.json >&2
+    exit 1
+fi
+log INFO "config.json 格式验证通过"
+
+# 调试模式打印配置
+if [ "${DEBUG:-false}" = "true" ]; then
+    log INFO "=== config.json 内容 ==="
+    cat /root/.piclist/config.json
+    log INFO "========================"
+fi
+
+log INFO "启动 PicList-Core 服务..."
+exec node /usr/local/bin/picgo-server -k "$PICLIST_KEY"
